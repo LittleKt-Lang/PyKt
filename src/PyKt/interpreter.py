@@ -1803,6 +1803,9 @@ class Interpreter(object):
                         idx, len(obj.elements)),
                     line=expr.line, column=expr.column)
             obj.elements[idx] = value
+            # Mirror to original Python list
+            if obj._py_backing is not None:
+                obj._py_backing[idx] = _pkt_to_py_raw(value)
             return value
 
         elif isinstance(obj, PktArray):
@@ -1817,6 +1820,9 @@ class Interpreter(object):
                         idx, obj.size),
                     line=expr.line, column=expr.column)
             obj.elements[idx] = value
+            # Mirror to original Python list
+            if obj._py_backing is not None:
+                obj._py_backing[idx] = _pkt_to_py_raw(value)
             return value
 
         elif isinstance(obj, PktMap):

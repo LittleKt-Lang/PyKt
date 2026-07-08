@@ -496,10 +496,16 @@ def _call_func(interp, func, args):
 # =========================================================================
 
 class PktList(PktValue):
-    """List value (mutable, ordered collection) with Kotlin-like methods."""
+    """List value (mutable, ordered collection) with Kotlin-like methods.
 
-    def __init__(self, elements=None):
+    When ``_py_backing`` is set, every mutation is mirrored back to the
+    original Python list so that Python → PyKt → Python round-trips
+    preserve identity.
+    """
+
+    def __init__(self, elements=None, py_backing=None):
         self.elements = list(elements) if elements is not None else []
+        self._py_backing = py_backing  # original Python list, or None
 
     @property
     def type_name(self):
@@ -536,6 +542,8 @@ class PktList(PktValue):
                 if len(args) < 1:
                     raise PktRuntimeError(u'add() requires an argument')
                 lst.append(args[0])
+                if self._py_backing is not None:
+                    self._py_backing.append(_pkt_to_py_raw(args[0]))
                 return PktBoolean(True)
             return PktBuiltinFunction(u'List.add', _add, 1)
 
@@ -547,6 +555,8 @@ class PktList(PktValue):
                 if idx < 0 or idx >= len(lst):
                     raise PktRuntimeError(u'Index {} out of bounds (size {})'.format(idx, len(lst)))
                 removed = lst.pop(idx)
+                if self._py_backing is not None:
+                    self._py_backing.pop(idx)
                 return removed
             return PktBuiltinFunction(u'List.removeAt', _remove_at, 1)
 
@@ -889,10 +899,15 @@ class PktMap(PktValue):
     """Mutable key-value map, similar to Kotlin's MutableMap.
 
     Keys can be any hashable PktValue. Values can be any PktValue.
+
+    When ``_py_backing`` is set, every mutation is mirrored back to the
+    original Python dict so that Python → PyKt → Python round-trips
+    preserve identity.
     """
 
-    def __init__(self, entries=None):
+    def __init__(self, entries=None, py_backing=None):
         self.entries = {}  # Python dict: id-based key storage, with PktValue wrapper refs
+        self._py_backing = py_backing  # original Python dict, or None
         if entries:
             for pair in entries:
                 if isinstance(pair, PktPair):
@@ -922,6 +937,9 @@ class PktMap(PktValue):
         k = self._key_str(key)
         old = self.entries.get(k)
         self.entries[k] = (key, value)
+        # Mirror to original Python dict
+        if self._py_backing is not None:
+            self._py_backing[_pkt_to_py_raw(key)] = _pkt_to_py_raw(value)
         if old is not None:
             return old[1]
         return PktNull()
@@ -943,6 +961,11 @@ class PktMap(PktValue):
         """Remove a key and return its value, or null if not found."""
         k = self._key_str(key)
         entry = self.entries.pop(k, None)
+        # Mirror to original Python dict
+        if self._py_backing is not None:
+            py_key = _pkt_to_py_raw(key)
+            if py_key in self._py_backing:
+                del self._py_backing[py_key]
         if entry is not None:
             return entry[1]
         return PktNull()
@@ -1646,7 +1669,12 @@ class PktPythonMethod(PktValue):
 
 
 def _pkt_to_py_raw(pkt_val):
-    """Convert a PktValue to a raw Python value (for passing to Python code)."""
+    """Convert a PktValue to a raw Python value (for passing to Python code).
+
+    When a PktList or PktMap has a ``_py_backing`` reference (injected from
+    Python), the original Python object is returned directly so that all
+    PyKt-side mutations are visible in Python.
+    """
     if isinstance(pkt_val, PktNull):
         return None
     if isinstance(pkt_val, PktBoolean):
@@ -1658,19 +1686,32 @@ def _pkt_to_py_raw(pkt_val):
     if isinstance(pkt_val, PktString):
         return pkt_val.value
     if isinstance(pkt_val, PktList):
+        if pkt_val._py_backing is not None:
+            return pkt_val._py_backing
         return [_pkt_to_py_raw(v) for v in pkt_val.elements]
     if isinstance(pkt_val, PktMap):
+        if pkt_val._py_backing is not None:
+            return pkt_val._py_backing
         d = {}
         for k, v in pkt_val.entries.values():
             d[_pkt_to_py_raw(k)] = _pkt_to_py_raw(v)
         return d
+    if isinstance(pkt_val, PktArray):
+        if pkt_val._py_backing is not None:
+            return pkt_val._py_backing
+        return [_pkt_to_py_raw(v) for v in pkt_val.elements]
     if isinstance(pkt_val, PktPythonInstance):
         return pkt_val._py_instance
     return pkt_val
 
 
 def _py_to_pkt_value(py_val):
-    """Wrap a Python value as a PktValue."""
+    """Wrap a Python value as a PktValue.
+
+    List, dict, and tuple arguments keep a ``_py_backing`` reference to
+    the original Python object so that mutations from PyKt code are
+    reflected back into Python.
+    """
     if py_val is None:
         return PktNull()
     if isinstance(py_val, bool):
@@ -1682,9 +1723,11 @@ def _py_to_pkt_value(py_val):
     if isinstance(py_val, (str, unicode)):
         return PktString(py_val)
     if isinstance(py_val, list):
-        return PktList([_py_to_pkt_value(v) for v in py_val])
+        lst = PktList([_py_to_pkt_value(v) for v in py_val],
+                      py_backing=py_val)
+        return lst
     if isinstance(py_val, dict):
-        m = PktMap()
+        m = PktMap(py_backing=py_val)
         for k, v in py_val.items():
             m.put(_py_to_pkt_value(k), _py_to_pkt_value(v))
         return m

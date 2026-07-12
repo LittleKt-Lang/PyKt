@@ -842,10 +842,15 @@ class Parser(object):
 
     def _parse_precedence(self, precedence):
         """Pratt parser: parse an expression with the given minimum precedence."""
+        # Guard against infinite recursion at EOF: when the token stream
+        # is exhausted _advance() would return the previous (stale) token,
+        # whose prefix parselet could loop back here forever.
+        if self._is_at_end():
+            raise self._error(self._peek(), u'Expected expression')
         token = self._advance()
         prefix_fn = self._prefix_parselets.get(token.type)
         if prefix_fn is None:
-            raise self._error(token, u'Expected expression, got {!r}'.format(token.lexeme))
+            raise self._error(token, u"Expected expression, got '{}'".format(token.lexeme))
 
         left = prefix_fn(token)
 

@@ -380,29 +380,36 @@ class PyKtRuntime(object):
         pi = rt['PI']            # get raw Python value (3.14159)
     """
 
-    def __init__(self):
+    def __init__(self, str_encoding='unicode'):
         from interpreter import Interpreter
         self._interpreter = Interpreter()
         self._had_error = False
         self._error_message = u''
+        self._str_encoding = str_encoding  # 'unicode' or 'utf8'
 
         # Register Python-callable wrapper for PktBuiltinFunction.func calls.
-        # Each injected Python callable needs access to the interpreter.
         self._interpreter._runtime_ref = self
 
     # ------------------------------------------------------------------
     # Source execution
     # ------------------------------------------------------------------
 
-    def run(self, source, filename='<string>'):
+    def run(self, source, filename='<string>', raise_on_error=False):
         """Execute PyKt source code.
 
         Args:
             source: Source code string (unicode or bytes).
             filename: Source identifier for error messages.
+            raise_on_error: If True, PyKt exceptions (parse errors,
+                type errors, runtime errors) are re-raised so that
+                Python callers can catch them directly.
 
         Returns:
             self (for chaining).
+
+        Raises:
+            PktError: When ``raise_on_error=True`` and a parse or
+                runtime error occurs.
         """
         from lexer import Lexer
         from pkt_parser import Parser
@@ -418,21 +425,26 @@ class PyKtRuntime(object):
         except PktError as e:
             self._had_error = True
             self._error_message = unicode(e)
+            if raise_on_error:
+                raise
             print(unicode(e), file=sys.stderr)
         except Exception as e:
             self._had_error = True
             self._error_message = unicode(e)
+            if raise_on_error:
+                raise
             print(u'Internal error: {}'.format(unicode(e)), file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
 
         return self
 
-    def run_file(self, filepath):
+    def run_file(self, filepath, raise_on_error=False):
         """Read and execute a PyKt source file.
 
         Args:
             filepath: Path to the source file.
+            raise_on_error: If True, PyKt exceptions are re-raised.
 
         Returns:
             self (for chaining).
@@ -440,6 +452,8 @@ class PyKtRuntime(object):
         if not os.path.exists(filepath):
             self._had_error = True
             self._error_message = u'File not found: {}'.format(filepath)
+            if raise_on_error:
+                raise IOError(self._error_message)
             print(self._error_message, file=sys.stderr)
             return self
 
@@ -449,10 +463,12 @@ class PyKtRuntime(object):
         except IOError as e:
             self._had_error = True
             self._error_message = unicode(e)
+            if raise_on_error:
+                raise
             print(u'Error reading file: {}'.format(filepath), file=sys.stderr)
             return self
 
-        return self.run(source, filepath)
+        return self.run(source, filepath, raise_on_error=raise_on_error)
 
     @property
     def had_error(self):
@@ -652,6 +668,10 @@ class PyKtRuntime(object):
         if isinstance(pkt_val, PktDouble):
             return pkt_val.value
         if isinstance(pkt_val, PktString):
+            # Respect str_encoding config: 'unicode' returns unicode,
+            # 'utf8' returns UTF-8 encoded str (Python 2 bytes).
+            if self._str_encoding == 'utf8':
+                return pkt_val.value.encode('utf-8')
             return pkt_val.value
         if isinstance(pkt_val, PktList):
             return PktListProxy(self, pkt_val)
@@ -684,13 +704,18 @@ class PyKtRuntime(object):
 # Legacy / convenience API
 # =========================================================================
 
-def create_runtime():
+def create_runtime(str_encoding='unicode'):
     """Create a new PyKtRuntime instance.
+
+    Args:
+        str_encoding: How strings are returned to Python.
+            ``'unicode'`` (default) — return Python ``unicode`` objects.
+            ``'utf8'`` — return UTF-8 encoded ``str`` (bytes) objects.
 
     Returns:
         A PyKtRuntime ready for injection and execution.
     """
-    return PyKtRuntime()
+    return PyKtRuntime(str_encoding=str_encoding)
 
 
 def run(source, filename='<unknown>'):

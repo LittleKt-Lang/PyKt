@@ -719,7 +719,7 @@ class Lexer(object):
         else:
             # Unknown character: emit error but keep going
             raise LexerError(
-                u'Unexpected character: {!r}'.format(c),
+                u"Unexpected character: '{}'".format(c),
                 line=self.line,
                 column=self.column - 1,
                 filename=self.filename)

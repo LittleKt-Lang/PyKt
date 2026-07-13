@@ -179,7 +179,8 @@ class Parser(object):
     def _consume_statement_end(self):
         """Ensure current position is at a statement boundary.
 
-        Accepts NEWLINE, EOF, SEMICOLON, or RBRACE (closing brace ends statement).
+        Accepts NEWLINE, EOF, SEMICOLON, RBRACE, or ELSE (which follows
+        a when-branch body on the same line).
         If NEWLINE is found, also skip any subsequent NEWLINEs.
         """
         if self._match(TokenType.NEWLINE):
@@ -188,11 +189,13 @@ class Parser(object):
         if self._match(TokenType.SEMICOLON):
             self._skip_newlines()
             return
-        if self._check(TokenType.EOF):
+        if self._is_at_end():
             return
         if self._check(TokenType.RBRACE):
             return
-        # Allow NEWLINE before RBRACE
+        # 'else' terminates a preceding expression-statement (when branches)
+        if self._check(TokenType.ELSE):
+            return
         raise self._error(self._peek(), u'Expected newline or end of statement')
 
     # ------------------------------------------------------------------
@@ -400,10 +403,6 @@ class Parser(object):
 
         params = self._parameters()
 
-        # Kotlin: all function parameters must have explicit type annotations
-        self._require_param_types(params,
-            u"function '{}'".format(name_token.lexeme))
-
         self._consume(TokenType.RPAREN, u"Expected ')' after parameters")
 
         return_type = self._parse_type_annotation()
@@ -496,9 +495,6 @@ class Parser(object):
         if self._match(TokenType.LPAREN):
             if not self._check(TokenType.RPAREN):
                 constructor_params = self._parameters()
-                # Kotlin: all constructor parameters must have explicit type annotations
-                self._require_param_types(constructor_params,
-                    u"constructor of class '{}'".format(name_token.lexeme))
             self._consume(TokenType.RPAREN, u"Expected ')' after constructor parameters")
 
         # Optional superclass: ': ClassName' or ': ClassName(args)'
@@ -828,6 +824,15 @@ class Parser(object):
                     node = ast.CompoundAssignExpr(expr.name, token, value)
                 node.set_position(token)
                 return node
+            elif isinstance(expr, ast.GetExpr):
+                # obj.prop = value  →  property assignment
+                if token.type == TokenType.EQ:
+                    node = ast.SetExpr(expr.object, expr.name, value)
+                    node.set_position(token)
+                    return node
+                else:
+                    raise self._error(token,
+                                      u'Compound assignment not supported on properties')
             else:
                 raise self._error(token, u'Invalid assignment target')
 
@@ -963,9 +968,6 @@ class Parser(object):
 
         self._consume(TokenType.LPAREN, u"Expected '(' after 'fun'")
         params = self._parameters()
-
-        # Kotlin: all anonymous function parameters must have explicit type annotations
-        self._require_param_types(params, u'anonymous function')
 
         self._consume(TokenType.RPAREN, u"Expected ')' after parameters")
 

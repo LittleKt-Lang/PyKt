@@ -854,6 +854,7 @@ class Interpreter(object):
                 instance_properties[member.name] = {
                     'is_val': member.is_val,
                     'initializer': member.initializer,
+                    'type_annotation': member.type_annotation,
                 }
 
             elif isinstance(member, ast.InitBlock):
@@ -1212,20 +1213,23 @@ class Interpreter(object):
         # Validate return value against the enclosing function's return type
         if self._current_function_return_type is not None:
             if stmt.value is None:
-                # Bare 'return' — only valid for Unit-returning functions
-                if self._current_function_return_type != u'Unit':
+                # Bare 'return' — only valid for Unit / Any functions
+                if self._current_function_return_type not in (u'Unit', u'Any'):
                     raise PktTypeError(
                         u"Type mismatch: function expects return type '{}', "
                         u"but 'return' has no value".format(
                             self._current_function_return_type),
                         line=stmt.line, column=stmt.column)
             elif self._current_function_return_type == u'Unit':
-                # Block body without explicit return type → inferred Unit
+                # Block body w/o return type → inferred Unit
                 if not isinstance(value, PktNull):
                     raise PktTypeError(
                         u"Type mismatch: inferred return type is 'Unit', "
                         u"but returned '{}'".format(value.type_name),
                         line=stmt.line, column=stmt.column)
+            elif self._current_function_return_type == u'Any':
+                # Any accepts any return value — no validation
+                pass
             else:
                 # Explicit return type → validate via standard type check
                 self._validate_type(value, self._current_function_return_type,
@@ -1618,7 +1622,7 @@ class Interpreter(object):
             elif declaration.name == u'<lambda>':
                 self._current_function_return_type = None
             else:
-                self._current_function_return_type = u'Unit'
+                self._current_function_return_type = u'Any'
 
             # ---- Execute body ----
             self._execute_block(declaration.body)
@@ -1709,7 +1713,7 @@ class Interpreter(object):
             elif declaration.name == u'<lambda>':
                 self._current_function_return_type = None
             else:
-                self._current_function_return_type = u'Unit'
+                self._current_function_return_type = u'Any'
 
             # ---- Execute body ----
             self._execute_block(declaration.body)
@@ -1730,7 +1734,12 @@ class Interpreter(object):
         """Evaluate a property assignment: obj.name = value"""
         obj = self._evaluate(expr.object)
         value = self._evaluate(expr.value)
-        obj.set(expr.name, value)
+        # Type-check against declared property type before setting
+        if isinstance(obj, PktInstance):
+            type_ann = obj.klass.get_property_type(expr.name)
+            if type_ann is not None:
+                self._validate_type(value, type_ann, expr.line, expr.column)
+        obj.set(expr.name, value, interpreter=self)
         return value
 
     def _visit_IndexExpr(self, expr):
@@ -1953,11 +1962,12 @@ class Interpreter(object):
 
     def _evaluate_branch(self, branch):
         """Evaluate an if/when branch which may be a BlockStmt, an Expr,
-        or an IfStmt (when used in expression context inside a block).
+        an ExprStmt, or an IfStmt (when used in expression context).
 
         For a BlockStmt the value is the last expression-statement's result
         (matching Kotlin block-value semantics).  IfStmt with an else branch
-        is treated as an expression.  Plain expressions are evaluated directly.
+        is treated as an expression.  ExprStmt unwraps and evaluates the
+        inner expression directly.
 
         Returns:
             PktValue — the branch result (PktNull if the block has no
@@ -1969,17 +1979,17 @@ class Interpreter(object):
                 if isinstance(s, ast.ExprStmt):
                     last = self._evaluate(s.expression)
                 elif isinstance(s, ast.IfStmt) and s.else_branch is not None:
-                    # if-else in statement position inside an expression block
-                    # → treat it as an expression (Kotlin semantics)
                     last = self._evaluate_if_as_expr(s)
                 else:
                     self._execute(s)
             return last
         elif isinstance(branch, ast.IfStmt):
-            # Direct if-stmt as branch (e.g., single-statement else branch)
             return self._evaluate_if_as_expr(branch)
+        elif isinstance(branch, ast.ExprStmt):
+            # Statement-wrapped expression (common in when branches)
+            return self._evaluate(branch.expression)
         else:
-            # Single expression (Expr node)
+            # Plain Expr node
             return self._evaluate(branch)
 
     def _evaluate_if_as_expr(self, stmt):
@@ -2071,26 +2081,22 @@ class Interpreter(object):
         return PktBoolean(isinstance(left, expected_type))
 
     def _visit_WhenStmt(self, stmt):
-        """Evaluate a when expression (returns a value).
+        """Evaluate a when expression, returning the matched branch's value.
 
-        When used as an expression, every branch should produce a value.
-        The when statement handler in _execute also handles this.
+        Kotlin semantics: ``when`` is an expression when all branches are
+        present (including ``else``).  Each branch's body is evaluated and
+        its last expression-statement yields the branch value.
         """
         subject = None
         if stmt.subject is not None:
             subject = self._evaluate(stmt.subject)
 
-        result = PktNull()
-
         for branch in stmt.branches:
             if branch.is_else:
-                # Evaluate the branch body
                 try:
-                    self._execute(branch.body)
+                    return self._evaluate_branch(branch.body)
                 except ReturnException as ret:
                     return ret.value
-                # For expression statements, get the last value
-                return result
 
             for cond in branch.conditions:
                 matched = False
@@ -2105,9 +2111,8 @@ class Interpreter(object):
 
                 if matched:
                     try:
-                        self._execute(branch.body)
+                        return self._evaluate_branch(branch.body)
                     except ReturnException as ret:
                         return ret.value
-                    return result
 
         return PktNull()

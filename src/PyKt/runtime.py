@@ -48,7 +48,7 @@ class PktValue(object):
         raise PktRuntimeError(
             u"Cannot access property '{}' on {}".format(name, self.type_name))
 
-    def set(self, name, value):
+    def set(self, name, value, interpreter=None):
         """Set a property by name. Default: raise error."""
         raise PktRuntimeError(
             u"Cannot set property '{}' on {}".format(name, self.type_name))
@@ -1215,6 +1215,21 @@ class PktClass(PktValue):
             return self.parent_class.resolve_method(name)
         return None
 
+    def get_property_type(self, name):
+        """Get the declared type annotation for a property, or None.
+
+        Looks in constructor params first, then instance_properties.
+        """
+        # Check constructor params (val/var in class header)
+        for p in self.constructor_params:
+            if p.name == name:
+                return p.type_annotation
+        # Check class-body properties
+        prop = self.instance_properties.get(name)
+        if prop:
+            return prop.get('type_annotation')
+        return None
+
     def has_method(self, name):
         """Check if a method exists anywhere in the inheritance chain."""
         return self.resolve_method(name) is not None
@@ -1245,6 +1260,10 @@ class PktClass(PktValue):
             else:
                 raise PktRuntimeError(
                     u"No value provided for parameter '{}'".format(param.name))
+            # Type-check constructor argument
+            if param.type_annotation is not None:
+                interpreter._validate_type(value, param.type_annotation,
+                                          param.line, param.column)
             instance_env.define(param.name, value, is_val=True)
             instance.fields[param.name] = value
 
@@ -1297,6 +1316,27 @@ class PktClass(PktValue):
                     parent_args = arguments
                 parent_exc = self.parent_class.call(interpreter, parent_args)
                 instance.fields[u'__parent_exc__'] = parent_exc
+
+        # Initialize class-body properties (val / var with initializers)
+        for prop_name, prop_info in self.instance_properties.items():
+            init_expr = prop_info.get('initializer')
+            if init_expr is not None:
+                prop_val = interpreter._evaluate(init_expr)
+                # Validate against declared type if present
+                type_ann = prop_info.get('type_annotation')
+                if type_ann is not None:
+                    interpreter._validate_type(prop_val, type_ann,
+                                              init_expr.line, init_expr.column)
+                instance.fields[prop_name] = prop_val
+                instance_env.define(prop_name, prop_val,
+                                   is_val=prop_info.get('is_val', False))
+                # Track val properties for external-assignment protection
+                if prop_info.get('is_val'):
+                    instance._val_props.add(prop_name)
+            elif prop_info.get('is_val') or not prop_info.get('is_val'):
+                # Property without initializer (e.g. 'val x: Int' in class body)
+                # Still need to track val/var for external access control
+                pass
 
         # Execute init blocks
         previous_env = interpreter.environment
@@ -1402,6 +1442,7 @@ class PktInstance(PktValue):
     def __init__(self, klass, type_args=None):
         self.klass = klass
         self.fields = {}  # instance fields (properties)
+        self._val_props = set()  # names of val (immutable) properties
         self.type_args = type_args if type_args is not None else []
         self._py_parent_instance = None  # for Python class inheritance
 
@@ -1439,9 +1480,9 @@ class PktInstance(PktValue):
             u"Property '{}' not found on instance of '{}'".format(
                 name, self.klass.name))
 
-    def set(self, name, value):
-        """Set a property on this instance."""
-        if name in self.fields and hasattr(self, '_val_props') and name in self._val_props:
+    def set(self, name, value, interpreter=None):
+        """Set a property on this instance (val-protected, type checked by caller)."""
+        if name in self.fields and name in self._val_props:
             raise PktRuntimeError(
                 u"Cannot reassign val property '{}'".format(name))
         self.fields[name] = value
@@ -1638,7 +1679,7 @@ class PktPythonInstance(PktValue):
             u"Attribute '{}' not found on Python object '{}'".format(
                 uname, self.type_name))
 
-    def set(self, name, value):
+    def set(self, name, value, interpreter=None):
         uname = unicode(name)
         if hasattr(self._py_instance, uname):
             setattr(self._py_instance, uname, _pkt_to_py_raw(value))

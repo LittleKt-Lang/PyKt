@@ -1534,7 +1534,8 @@ class Interpreter(object):
             return callee.call(self, arguments)
 
         elif isinstance(callee, PktPythonMethod):
-            raw_args = [_pkt_to_py_raw(a) for a in arguments]
+            enc = getattr(getattr(self, '_runtime_ref', None), '_str_encoding', 'unicode')
+            raw_args = [_pkt_to_py_raw(a, enc) for a in arguments]
             try:
                 result = callee._method(*raw_args)
             except ThrowException:
@@ -1812,9 +1813,9 @@ class Interpreter(object):
                         idx, len(obj.elements)),
                     line=expr.line, column=expr.column)
             obj.elements[idx] = value
-            # Mirror to original Python list
             if obj._py_backing is not None:
-                obj._py_backing[idx] = _pkt_to_py_raw(value)
+                enc = getattr(getattr(self, '_runtime_ref', None), '_str_encoding', 'unicode')
+                obj._py_backing[idx] = _pkt_to_py_raw(value, enc)
             return value
 
         elif isinstance(obj, PktArray):
@@ -1829,13 +1830,13 @@ class Interpreter(object):
                         idx, obj.size),
                     line=expr.line, column=expr.column)
             obj.elements[idx] = value
-            # Mirror to original Python list
             if obj._py_backing is not None:
-                obj._py_backing[idx] = _pkt_to_py_raw(value)
+                enc = getattr(getattr(self, '_runtime_ref', None), '_str_encoding', 'unicode')
+                obj._py_backing[idx] = _pkt_to_py_raw(value, enc)
             return value
 
         elif isinstance(obj, PktMap):
-            obj.put(index, value)
+            obj.put(index, value, interpreter=self)
             return value
 
         else:

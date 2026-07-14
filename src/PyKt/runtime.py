@@ -543,7 +543,9 @@ class PktList(PktValue):
                     raise PktRuntimeError(u'add() requires an argument')
                 lst.append(args[0])
                 if self._py_backing is not None:
-                    self._py_backing.append(_pkt_to_py_raw(args[0]))
+                    enc = getattr(interp, '_runtime_ref', None)
+                    enc = getattr(enc, '_str_encoding', 'unicode') if enc else 'unicode'
+                    self._py_backing.append(_pkt_to_py_raw(args[0], enc))
                 return PktBoolean(True)
             return PktBuiltinFunction(u'List.add', _add, 1)
 
@@ -932,14 +934,16 @@ class PktMap(PktValue):
         """Store a key-value pair."""
         self.entries[self._key_str(key)] = (key, value)
 
-    def put(self, key, value):
+    def put(self, key, value, interpreter=None):
         """Associate key with value. Returns the previous value or null."""
         k = self._key_str(key)
         old = self.entries.get(k)
         self.entries[k] = (key, value)
-        # Mirror to original Python dict
         if self._py_backing is not None:
-            self._py_backing[_pkt_to_py_raw(key)] = _pkt_to_py_raw(value)
+            enc = 'unicode'
+            if interpreter and hasattr(interpreter, '_runtime_ref'):
+                enc = getattr(interpreter._runtime_ref, '_str_encoding', 'unicode')
+            self._py_backing[_pkt_to_py_raw(key, enc)] = _pkt_to_py_raw(value, enc)
         if old is not None:
             return old[1]
         return PktNull()
@@ -957,13 +961,15 @@ class PktMap(PktValue):
         k = self._key_str(key)
         return k in self.entries
 
-    def remove(self, key):
+    def remove(self, key, interpreter=None):
         """Remove a key and return its value, or null if not found."""
         k = self._key_str(key)
         entry = self.entries.pop(k, None)
-        # Mirror to original Python dict
         if self._py_backing is not None:
-            py_key = _pkt_to_py_raw(key)
+            enc = 'unicode'
+            if interpreter and hasattr(interpreter, '_runtime_ref'):
+                enc = getattr(interpreter._runtime_ref, '_str_encoding', 'unicode')
+            py_key = _pkt_to_py_raw(key, enc)
             if py_key in self._py_backing:
                 del self._py_backing[py_key]
         if entry is not None:
@@ -1009,7 +1015,7 @@ class PktMap(PktValue):
             def _put(interp, args):
                 if len(args) < 2:
                     raise PktRuntimeError(u'put() requires a key and a value')
-                return self.put(args[0], args[1])
+                return self.put(args[0], args[1], interpreter=interp)
             return PktBuiltinFunction(u'Map.put', _put, 2)
 
         if name == u'containsKey':
@@ -1029,7 +1035,7 @@ class PktMap(PktValue):
             def _remove(interp, args):
                 if len(args) < 1:
                     raise PktRuntimeError(u'remove() requires a key')
-                return self.remove(args[0])
+                return self.remove(args[0], interpreter=interp)
             return PktBuiltinFunction(u'Map.remove', _remove, 1)
 
         # ---- Higher-order functions ----
@@ -1709,12 +1715,12 @@ class PktPythonMethod(PktValue):
         return u'<Python method {}>'.format(self._name)
 
 
-def _pkt_to_py_raw(pkt_val):
-    """Convert a PktValue to a raw Python value (for passing to Python code).
+def _pkt_to_py_raw(pkt_val, str_encoding='unicode'):
+    """Convert a PktValue to a raw Python value.
 
-    When a PktList or PktMap has a ``_py_backing`` reference (injected from
-    Python), the original Python object is returned directly so that all
-    PyKt-side mutations are visible in Python.
+    Args:
+        str_encoding: ``'unicode'`` returns Python ``unicode``;
+            ``'utf8'`` returns UTF-8 encoded ``str`` bytes.
     """
     if isinstance(pkt_val, PktNull):
         return None
@@ -1725,28 +1731,30 @@ def _pkt_to_py_raw(pkt_val):
     if isinstance(pkt_val, PktDouble):
         return pkt_val.value
     if isinstance(pkt_val, PktString):
+        if str_encoding == 'utf8':
+            return pkt_val.value.encode('utf-8')
         return pkt_val.value
     if isinstance(pkt_val, PktList):
         if pkt_val._py_backing is not None:
             return pkt_val._py_backing
-        return [_pkt_to_py_raw(v) for v in pkt_val.elements]
+        return [_pkt_to_py_raw(v, str_encoding) for v in pkt_val.elements]
     if isinstance(pkt_val, PktMap):
         if pkt_val._py_backing is not None:
             return pkt_val._py_backing
         d = {}
         for k, v in pkt_val.entries.values():
-            d[_pkt_to_py_raw(k)] = _pkt_to_py_raw(v)
+            d[_pkt_to_py_raw(k, str_encoding)] = _pkt_to_py_raw(v, str_encoding)
         return d
     if isinstance(pkt_val, PktArray):
         if pkt_val._py_backing is not None:
             return pkt_val._py_backing
-        return [_pkt_to_py_raw(v) for v in pkt_val.elements]
+        return [_pkt_to_py_raw(v, str_encoding) for v in pkt_val.elements]
     if isinstance(pkt_val, PktPythonInstance):
         return pkt_val._py_instance
     return pkt_val
 
 
-def _py_to_pkt_value(py_val):
+def _py_to_pkt_value(py_val, str_encoding='unicode'):
     """Wrap a Python value as a PktValue.
 
     List, dict, and tuple arguments keep a ``_py_backing`` reference to
@@ -1761,19 +1769,24 @@ def _py_to_pkt_value(py_val):
         return PktInt(py_val)
     if isinstance(py_val, float):
         return PktDouble(py_val)
-    if isinstance(py_val, (str, unicode)):
+    if isinstance(py_val, unicode):
+        return PktString(py_val)
+    if isinstance(py_val, str):
+        if str_encoding == 'utf8':
+            return PktString(py_val.decode('utf-8'))
         return PktString(py_val)
     if isinstance(py_val, list):
-        lst = PktList([_py_to_pkt_value(v) for v in py_val],
+        lst = PktList([_py_to_pkt_value(v, str_encoding) for v in py_val],
                       py_backing=py_val)
         return lst
     if isinstance(py_val, dict):
         m = PktMap(py_backing=py_val)
         for k, v in py_val.items():
-            m.put(_py_to_pkt_value(k), _py_to_pkt_value(v))
+            m.put(_py_to_pkt_value(k, str_encoding),
+                  _py_to_pkt_value(v, str_encoding))
         return m
     if isinstance(py_val, tuple):
-        return PktList([_py_to_pkt_value(v) for v in py_val])
+        return PktList([_py_to_pkt_value(v, str_encoding) for v in py_val])
     if isinstance(py_val, PktValue):
         return py_val
     # Unknown Python object: wrap in PktPythonInstance

@@ -522,8 +522,9 @@ class PyKtRuntime(object):
         # Determine if this should be val (immutable) or var (mutable)
         is_val = not mutable
 
-        if callable(value) and not isinstance(value, (PktValue, type)):
-            # Python callable -> PktBuiltinFunction
+        if callable(value) and not isinstance(value, PktValue):
+            # Python callable / type -> PktBuiltinFunction
+            # (types like str, int, bool ARE callable constructors)
             pkt_value = PktBuiltinFunction(uname, self._make_callable_func(value), -1)
             is_val = True   # functions cannot be reassigned
 
@@ -643,7 +644,7 @@ class PyKtRuntime(object):
 
     def _wrap_value(self, value):
         """Wrap a Python value into a PktValue."""
-        return _py_to_pkt_value(value)
+        return _py_to_pkt_value(value, str_encoding=self._str_encoding)
 
     def _unwrap_value(self, pkt_val):
         """Convert a PktValue into a Python-usable representation.

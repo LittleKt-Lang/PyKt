@@ -776,6 +776,21 @@ class Interpreter(object):
             self._execute(stmt)
 
     # ------------------------------------------------------------------
+    # Value unwrapping (delegates to runtime)
+    # ------------------------------------------------------------------
+
+    def _unwrap(self, pkt_val):
+        """将 PktValue 转为 Python 可用对象。
+
+        委托给 runtime 的 _unwrap_value，它会将 PktFunction 包装为
+        Python-callable wrapper、PktList 包装为 list-like proxy 等。
+        """
+        runtime_ref = getattr(self, '_runtime_ref', None)
+        if runtime_ref is not None:
+            return runtime_ref._unwrap_value(pkt_val)
+        return _pkt_to_py_raw(pkt_val)
+
+    # ------------------------------------------------------------------
     # Expression dispatch
     # ------------------------------------------------------------------
 
@@ -1534,8 +1549,7 @@ class Interpreter(object):
             return callee.call(self, arguments)
 
         elif isinstance(callee, PktPythonMethod):
-            enc = getattr(getattr(self, '_runtime_ref', None), '_str_encoding', 'unicode')
-            raw_args = [_pkt_to_py_raw(a, enc) for a in arguments]
+            raw_args = [self._unwrap(a) for a in arguments]
             try:
                 result = callee._method(*raw_args)
             except ThrowException:

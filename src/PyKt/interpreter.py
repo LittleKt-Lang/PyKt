@@ -1804,6 +1804,15 @@ class Interpreter(object):
                     line=expr.line, column=expr.column)
             return PktString(obj.value[idx])
 
+        elif isinstance(obj, PktPythonInstance):
+            raw_key = self._unwrap(index)
+            try:
+                return _py_to_pkt_value(obj._py_instance[raw_key])
+            except (KeyError, IndexError, TypeError):
+                raise PktRuntimeError(
+                    u"Key '{}' not found".format(raw_key),
+                    line=expr.line, column=expr.column)
+
         else:
             raise PktRuntimeError(
                 u"Cannot index into type '{}'".format(obj.type_name),
@@ -1851,6 +1860,17 @@ class Interpreter(object):
 
         elif isinstance(obj, PktMap):
             obj.put(index, value, interpreter=self)
+            return value
+
+        elif isinstance(obj, PktPythonInstance):
+            raw_key = self._unwrap(index)
+            raw_val = self._unwrap(value)
+            try:
+                obj._py_instance[raw_key] = raw_val
+            except (KeyError, IndexError, TypeError):
+                raise PktRuntimeError(
+                    u"Cannot set key '{}'".format(raw_key),
+                    line=expr.line, column=expr.column)
             return value
 
         else:

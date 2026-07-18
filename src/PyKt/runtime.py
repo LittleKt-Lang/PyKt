@@ -140,6 +140,8 @@ class PktInt(PktValue):
         """Built-in methods and properties on Int."""
         if name == u'toString':
             return PktString(unicode(self.value))
+        if name == u'toDouble':
+            return PktDouble(float(self.value))
         raise PktRuntimeError(
             u"Cannot access '{}' on Int".format(name))
 
@@ -169,6 +171,15 @@ class PktDouble(PktValue):
         if isinstance(other, PktInt):
             return self.value == float(other.value)
         return False
+
+    def get(self, name):
+        """Built-in methods and properties on Double."""
+        if name == u'toString':
+            return PktString(unicode(self.value))
+        if name == u'toInt':
+            return PktInt(int(self.value))
+        raise PktRuntimeError(
+            u"Cannot access '{}' on Double".format(name))
 
     def __str__(self):
         return unicode(self.value)
@@ -293,6 +304,17 @@ class PktString(PktValue):
                 except (ValueError, TypeError):
                     raise PktRuntimeError(u"Cannot convert '{}' to Int".format(s))
             return PktBuiltinFunction(u'String.toInt', _to_int, 0)
+
+        if name == u'toDouble':
+            def _to_double(interp, args):
+                try:
+                    return PktDouble(float(s.strip()))
+                except (ValueError, TypeError):
+                    raise PktRuntimeError(u"Cannot convert '{}' to Double".format(s))
+            return PktBuiltinFunction(u'String.toDouble', _to_double, 0)
+
+        if name == u'toBoolean':
+            return PktBoolean(s.lower() == u'true')
 
         raise PktRuntimeError(
             u"Cannot access '{}' on String".format(name))
@@ -1678,6 +1700,8 @@ class PktPythonInstance(PktValue):
         uname = unicode(name)
         if hasattr(self._py_instance, uname):
             attr = getattr(self._py_instance, uname)
+            if isinstance(attr, type):
+                return _py_to_pkt_value(attr)
             if callable(attr):
                 return PktPythonMethod(attr, uname)
             return _py_to_pkt_value(attr)
@@ -1749,6 +1773,9 @@ def _pkt_to_py_raw(pkt_val, str_encoding='unicode'):
         if pkt_val._py_backing is not None:
             return pkt_val._py_backing
         return [_pkt_to_py_raw(v, str_encoding) for v in pkt_val.elements]
+    if isinstance(pkt_val, PktPair):
+        return (_pkt_to_py_raw(pkt_val.first, str_encoding),
+                _pkt_to_py_raw(pkt_val.second, str_encoding))
     if isinstance(pkt_val, PktPythonInstance):
         return pkt_val._py_instance
     return pkt_val

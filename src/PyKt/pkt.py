@@ -675,11 +675,15 @@ class PyKtRuntime(object):
                 return pkt_val.value.encode('utf-8')
             return pkt_val.value
         if isinstance(pkt_val, PktList):
-            return PktListProxy(self, pkt_val)
+            if pkt_val._py_backing is not None:
+                return PktListProxy(self, pkt_val)
+            return _pkt_to_py_raw(pkt_val)
         if isinstance(pkt_val, PktMap):
-            return PktMapProxy(self, pkt_val)
+            if pkt_val._py_backing is not None:
+                return PktMapProxy(self, pkt_val)
+            return _pkt_to_py_raw(pkt_val)
         if isinstance(pkt_val, PktArray):
-            return PktListProxy(self, PktList(pkt_val.elements))
+            return _pkt_to_py_raw(pkt_val)
         if isinstance(pkt_val, PktIntRange):
             return range(pkt_val.start, pkt_val.end + 1, pkt_val.step)
         if isinstance(pkt_val, PktBuiltinFunction):

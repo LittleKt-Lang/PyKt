@@ -988,6 +988,29 @@ class Interpreter(object):
                     except ContinueException:
                         continue
 
+            elif isinstance(iterable, PktArray):
+                # Array iteration
+                for elem in iterable.elements:
+                    self.environment.define(stmt.variable, elem, is_val=False)
+                    try:
+                        self._execute(stmt.body)
+                    except BreakException:
+                        break
+                    except ContinueException:
+                        continue
+
+            elif isinstance(iterable, PktMap):
+                # Map iteration — iterates entries as PktPair(key, value)
+                for key, val in iterable.entries.values():
+                    entry = PktPair(key, val)
+                    self.environment.define(stmt.variable, entry, is_val=False)
+                    try:
+                        self._execute(stmt.body)
+                    except BreakException:
+                        break
+                    except ContinueException:
+                        continue
+
             else:
                 raise PktRuntimeError(
                     u"Cannot iterate over '{}'".format(iterable.type_name),
